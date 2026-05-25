@@ -1,0 +1,72 @@
+import subprocess
+import sys
+
+#making sure everybody can run this without worrying about dependencies
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+required = ["requests", "geopandas", "pandas"]
+for package in required:
+    try:
+        __import__(package)
+    except ImportError:
+        print(f"Installing {package}...")
+        install(package)
+
+import requests
+import geopandas as gpd
+import pandas as pd
+from datetime import date
+import shutil
+import os
+
+# --- CONFIG ---
+JSON_URL = r"https://api.ipma.pt/open-data/forecast/meteorology/rcm/rcm-d0.json"
+BASE_LAYER = "path_to_CAOP_PIR.gpkg" #any CAOP file with a "Dico" column should work
+OUTPUT_DIR = "path_to_output" #where you want to save the dated files
+LATEST_DIR = "path_to_latest" #where you want to save the latest file (can be the same as OUTPUT_DIR if you want)
+JOIN_KEY = "dico"
+
+# --- FETCH JSON ---
+#Stolen from a better coder because I couldn't figure out nested json
+response = requests.get(JSON_URL)
+response.raise_for_status()
+data = response.json()
+locais = data.get("local", {})
+
+records = []
+for dico, info in locais.items():
+    rcm = info.get("data", {}).get("rcm")
+    records.append({
+        "dico": dico,
+        "rcm": rcm
+    })
+
+df = pd.DataFrame(records)
+
+# --- LOAD SPATIAL LAYER ---
+gdf = gpd.read_file(BASE_LAYER)
+
+# --- NORMALIZE JOIN KEY ---
+#Because IPMA and INE don't use the same formatting for the dico.
+
+# --- JOIN ---
+merged = gdf.merge(df, on=JOIN_KEY, how="left")
+merged = merged.drop(columns=["dico"])
+
+# --- SAVE DATED ARCHIVE ---
+today = date.today().isoformat()
+dated_path = os.path.join(OUTPUT_DIR, f"{today}.gpkg")
+merged.to_file(dated_path, driver="GPKG")
+
+# --- OVERWRITE LATEST, fixed name so it always gets replaced, hopefully---
+latest_path = os.path.join(LATEST_DIR, f"latest_{today}.gpkg")
+
+# Delete any previous latest_ file before copying the new one
+for f in os.listdir(LATEST_DIR):
+    if f.startswith("latest_") and f.endswith(".gpkg"):
+        os.remove(os.path.join(LATEST_DIR, f))
+
+shutil.copy(dated_path, latest_path)
+print(f"Done: {dated_path}")
+print(f"Latest: {latest_path}")
